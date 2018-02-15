@@ -100,6 +100,7 @@
 #include "board.h"
 
 
+
 /** GPIO pin/adc-function map. */
 const gpio_map_t ADC_GPIO_MAP = {
 #if defined(EXAMPLE_ADC_LIGHT_CHANNEL)
@@ -110,29 +111,105 @@ const gpio_map_t ADC_GPIO_MAP = {
 #endif
 };
 
+volatile U32 char_sent;
+
 //=====================LED FLASHING SHIT==============================
 
-#  define TC_CHANNEL                  0
+#  define TC_CHANNEL_LEDs                  0
 #  define EXAMPLE_TC                  (&AVR32_TC)
 #  define EXAMPLE_TC_IRQ_GROUP        AVR32_TC_IRQ_GROUP
-#  define EXAMPLE_TC_IRQ              AVR32_TC_IRQ0
+#  define LED_TC_IRQ              AVR32_TC_IRQ0
 #  define FPBA                        FOSC0          // FOSC0 est a 12Mhz
 #  define FALSE                       0
+#  define TRUE						1
+
+
+// Configuration du peripherique TC pour les LEDs
+static const tc_waveform_opt_t WAVEFORM_OPT =
+{
+	.channel  = TC_CHANNEL_LEDs,                        // Channel selection.
+
+	.bswtrg   = TC_EVT_EFFECT_NOOP,                // Software trigger effect on TIOB.
+	.beevt    = TC_EVT_EFFECT_NOOP,                // External event effect on TIOB.
+	.bcpc     = TC_EVT_EFFECT_NOOP,                // RC compare effect on TIOB.
+	.bcpb     = TC_EVT_EFFECT_NOOP,                // RB compare effect on TIOB.
+
+	.aswtrg   = TC_EVT_EFFECT_NOOP,                // Software trigger effect on TIOA.
+	.aeevt    = TC_EVT_EFFECT_NOOP,                // External event effect on TIOA.
+	.acpc     = TC_EVT_EFFECT_NOOP,                // RC compare effect on TIOA: toggle.
+	.acpa     = TC_EVT_EFFECT_NOOP,                // RA compare effect on TIOA: toggle
+	.wavsel   = TC_WAVEFORM_SEL_UP_MODE_RC_TRIGGER,// Waveform selection: Up mode with automatic trigger(reset) on RC compare.
+	.enetrg   = FALSE,                             // External event trigger enable.
+	.eevt     = 0,                                 // External event selection.
+	.eevtedg  = TC_SEL_NO_EDGE,                    // External event edge selection.
+	.cpcdis   = FALSE,                             // Counter disable when RC compare.
+	.cpcstop  = FALSE,                             // Counter clock stopped with RC compare.
+
+	.burst    = FALSE,                             // Burst signal selection.
+	.clki     = FALSE,                             // Clock inversion.
+	.tcclks   = TC_CLOCK_SOURCE_TC4                // Internal source clock 3, connected to fPBA / 8.
+};
+
+
+static const tc_interrupt_t TC_INTERRUPT =
+{
+	.etrgs = 0,
+	.ldrbs = 0,
+	.ldras = 0,
+	.cpcs  = 1,
+	.cpbs  = 0,
+	.cpas  = 0,
+	.lovrs = 0,
+	.covfs = 0
+};
+
+volatile int flag_led_toggle = FALSE;
+volatile int flag_character_sent = FALSE;
+volatile int flag_button_irq = FALSE;
+
 
 __attribute__((__interrupt__))
 
-static void tc_irq(void)
+static void led_irq(void)
 {
 	// La lecture du registre SR efface le fanion de l'interruption.
-	tc_read_sr(EXAMPLE_TC, TC_CHANNEL);
+	tc_read_sr(AVR32_TC, TC_CHANNEL_LEDs);
 
-	// Toggle le premier et le second LED.
-	gpio_tgl_gpio_pin(LED0_GPIO);
-	gpio_tgl_gpio_pin(LED1_GPIO);
+	flag_led_toggle = TRUE;
 }
 
-//=====================END LED FLASHING SHIT==========================
 
+__attribute__((__interrupt__))
+
+static void character_irq(void){
+	if (AVR32_USART1.csr & (AVR32_USART_CSR_RXRDY_MASK))
+	{
+		char_sent = (AVR32_USART1.rhr & AVR32_USART_RHR_RXCHR_MASK);
+		flag_character_sent = TRUE;
+	}
+
+}
+
+__attribute__((__interrupt__))
+static void button_irq(void){
+	flag_button_irq = TRUE;
+	AVR32_GPIO.port[2].ifrc = 1<<24;
+}
+
+
+static void usart_character_received(){
+	
+		if (char_sent == 's'){
+			gpio_clr_gpio_pin(LED1_GPIO);
+			gpio_clr_gpio_pin(LED2_GPIO);
+		}		
+		else if(char_sent == 'x')
+		{
+			gpio_clr_gpio_pin(LED1_GPIO);
+			AVR32_USART1.idr = AVR32_USART_IDR_TXRDY_MASK;
+		}
+	}
+}
 
 
 /** \brief Main application entry point - init and loop to display ADC values */
@@ -143,45 +220,15 @@ int main(void)
 	
 		U32 i;
 
-	  volatile avr32_tc_t *tc = EXAMPLE_TC;
+		volatile avr32_tc_t *tc = EXAMPLE_TC;
 
-	  // Configuration du peripherique TC
-	  static const tc_waveform_opt_t WAVEFORM_OPT =
-	  {
-		.channel  = TC_CHANNEL,                        // Channel selection.
-
-		.bswtrg   = TC_EVT_EFFECT_NOOP,                // Software trigger effect on TIOB.
-		.beevt    = TC_EVT_EFFECT_NOOP,                // External event effect on TIOB.
-		.bcpc     = TC_EVT_EFFECT_NOOP,                // RC compare effect on TIOB.
-		.bcpb     = TC_EVT_EFFECT_NOOP,                // RB compare effect on TIOB.
-
-		.aswtrg   = TC_EVT_EFFECT_NOOP,                // Software trigger effect on TIOA.
-		.aeevt    = TC_EVT_EFFECT_NOOP,                // External event effect on TIOA.
-		.acpc     = TC_EVT_EFFECT_NOOP,                // RC compare effect on TIOA: toggle.
-		.acpa     = TC_EVT_EFFECT_NOOP,                // RA compare effect on TIOA: toggle 
-		.wavsel   = TC_WAVEFORM_SEL_UP_MODE_RC_TRIGGER,// Waveform selection: Up mode with automatic trigger(reset) on RC compare.
-		.enetrg   = FALSE,                             // External event trigger enable.
-		.eevt     = 0,                                 // External event selection.
-		.eevtedg  = TC_SEL_NO_EDGE,                    // External event edge selection.
-		.cpcdis   = FALSE,                             // Counter disable when RC compare.
-		.cpcstop  = FALSE,                             // Counter clock stopped with RC compare.
-
-		.burst    = FALSE,                             // Burst signal selection.
-		.clki     = FALSE,                             // Clock inversion.
-		.tcclks   = TC_CLOCK_SOURCE_TC4                // Internal source clock 3, connected to fPBA / 8.
-	  };
-
-	  static const tc_interrupt_t TC_INTERRUPT =
-	  {
-		.etrgs = 0,
-		.ldrbs = 0,
-		.ldras = 0,
-		.cpcs  = 1,
-		.cpbs  = 0,
-		.cpas  = 0,
-		.lovrs = 0,
-		.covfs = 0
-	  };
+	  
+	  
+	   static const gpio_map_t USART_GPIO_MAP =
+	   {
+		   {AVR32_USART1_RXD_0_0_PIN, AVR32_USART1_RXD_0_0_FUNCTION},
+		   {AVR32_USART1_TXD_0_0_PIN, AVR32_USART1_TXD_0_0_FUNCTION}
+	   };
 
 	  /*! \brief Main function:
 	   *  - Configure the CPU to run at 12MHz
@@ -198,7 +245,7 @@ int main(void)
 	  INTC_init_interrupts();     // Initialise les vecteurs d'interrupt
 
 	  // Enregistrement de la nouvelle IRQ du TIMER au Interrupt Controller .
-	  INTC_register_interrupt(&tc_irq, EXAMPLE_TC_IRQ, AVR32_INTC_INT0);
+	  INTC_register_interrupt(&led_irq, LED_TC_IRQ, AVR32_INTC_INT0);
 	  Enable_global_interrupt();  // Active les interrupts
 
 	  tc_init_waveform(tc, &WAVEFORM_OPT);     // Initialize the timer/counter waveform.
@@ -207,7 +254,7 @@ int main(void)
 	  // Attention, RC est un 16-bits, valeur max 65535
 
 	  // We want: (1/(fPBA/32)) * RC = 0.100 s, donc RC = (fPBA/32) / 10  to get an interrupt every 100 ms.
-	  tc_write_rc(tc, TC_CHANNEL, (FPBA / 32) / 10); // Set RC value.
+	  tc_write_rc(tc, TC_CHANNEL, (FPBA / 32) / 1000); // Set RC value.
 
 	  tc_configure_interrupts(tc, TC_CHANNEL, &TC_INTERRUPT);
 
@@ -282,47 +329,57 @@ int main(void)
 		if (gpio_get_pin_value(GPIO_PUSH_BUTTON_1)==1 && gpio_get_pin_value(LED1_GPIO)==0)
 			gpio_set_gpio_pin(LED1_GPIO);
 		*/
-		
+		/*
 		if (gpio_get_pin_value(GPIO_PUSH_BUTTON_0)==1 && aux==0)
 		{
-			/*
+			
 			if (gpio_get_pin_value(LED2_GPIO)==1)
 				gpio_clr_gpio_pin(LED2_GPIO);
 			else
 				gpio_set_gpio_pin(LED2_GPIO);
-			*/
+			
 			//gpio_tgl_gpio_pin(LED0_GPIO);
 			aux++;
 		}
 		if (gpio_get_pin_value(GPIO_PUSH_BUTTON_0)==0) aux=0;
+		*/
+		//========================END BUTTON SHIT======================
 		
-		//========================END BUTTON SHIT======================		
-
+		// Initialise le USART1 en mode seriel RS232, a 57600 BAUDS, a FOSC0=12MHz.
+		init_dbg_rs232(FOSC0);
+		
+		usart_character_received();
+				
+		// Activer la source d'interrution du UART en reception (RXRDY)
+		AVR32_USART1.ier = AVR32_USART_IER_RXRDY_MASK;
+						
 		#if defined(EXAMPLE_ADC_LIGHT_CHANNEL)
 			/* Get value for the light adc channel */
 			adc_value_light = adc_get_value(&AVR32_ADC, EXAMPLE_ADC_LIGHT_CHANNEL);
 		
-			/* Display value to user */
+			/* Display value to user *//*
 			print_dbg("HEX Value for Channel light : 0x");
 			print_dbg_hex(adc_value_light);
-			print_dbg("\r\n");
+			print_dbg("\r\n");*/
 		#endif
 
 		#if defined(EXAMPLE_ADC_POTENTIOMETER_CHANNEL)
 			/* Get value for the potentiometer adc channel */
 			adc_value_pot = adc_get_value(&AVR32_ADC, EXAMPLE_ADC_POTENTIOMETER_CHANNEL);
 				
-			/* Display value to user */
+			/* Display value to user *//*
 			print_dbg("HEX Value for Channel pot : 0x");
 			print_dbg_hex(adc_value_pot);
-			print_dbg("\r\n");
+			print_dbg("\r\n");*/
 		#endif
-
-		/* Slow down the display of converted values */
-		//delay_ms(500);
-		
+			
+			
+			
+			
+		AVR32_USART1.ier = AVR32_USART_IER_RXRDY_MASK;	
 		
 	}
 
 	return 0;
 }
+
