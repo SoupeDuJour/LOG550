@@ -1,0 +1,65 @@
+<asf xmlversion="1.0">
+  <project id="pid.3e1b4ce1-4405-496f-909d-f052e2d5c134" caption="lab01 - at32uc3a0512" type="normal" workspace-name="lab01" force-caption="true" force-description="true">
+    <device-support value="at32uc3a0512" />
+    <info type="gui-flag" value="move-to-root" />
+    <info type="description" value="summary">Description of the main features. Mention also the supported part number(s), the board it is running on and the compiler it supports</info>
+    <require-external idref="board.evk1100" eidref="atmel.asf" />
+    <config name="config.avr32.utils.gccstartup" value="no" />
+    <config name="config.compiler.iarew32.heap_size" value="0xF300" />
+    <config name="config.board.evk1100.init" value="no" />
+    <config name="config.compiler.iarew32.app_stack_size" value="0x0000" />
+    <config name="config.compiler.avr32gcc.use_startfiles" value="yes" />
+    <config name="config.board.evk1100.led" value="yes" />
+    <config name="config.compiler.iarew32.sys_stack_size" value="0x0800" />
+    <config name="config.avr32.drivers.intc.exception" value="no" />
+    <config name="config.avr32.utils.trampoline" value="yes" />
+    <config name="config.utils.interrupt.intc" value="yes" />
+    <build type="include-path" value="thirdparty/freertos/demo/avr32_uc3_example/at32uc3a0512_evk1100" />
+    <build type="include-path" value="src/ASF/thirdparty/freertos/demo/avr32_uc3_example/at32uc3a0512_evk1100" />
+    <build type="include-path" value="src" />
+    <build type="library" value="libm" subtype="compiler" toolchain="avr32gcc" />
+    <build type="define" value="" name="NDEBUG" />
+    <build type="define" value="EVK1100" name="BOARD" />
+    <build type="define" value="" name="__FREERTOS__" />
+    <build type="linker-config" value="src\ASF\avr32\utils\linker_scripts\at32uc3a\0512\gcc\link_uc3a0512.lds" subtype="script" />
+    <build type="distribute" value="src\ASF\avr32\utils\make\Makefile.avr32.in" subtype="file" />
+    <build type="distribute" value="src\ASF\avr32\utils\make\Makefile.avr32program.in" subtype="file" />
+    <build type="distribute" value="src\ASF\avr32\utils\make\Makefile.batchisp.in" subtype="file" />
+    <build type="header-file" value="src\ASF\thirdparty\freertos\demo\avr32_uc3_example\at32uc3a0512_evk1100\conf_example.h" />
+    <build type="c-source" value="src\ASF\thirdparty\freertos\demo\avr32_uc3_example\main.c" />
+    <build type="header-file" value="src\config\conf_clock.h" />
+    <build type="header-file" value="src\config\conf_dip204.h" />
+    <build type="header-file" value="src\config\FreeRTOSConfig.h" />
+    <require-external idref="avr32.components.display.dip204" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.adc" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.cpu.cycle_counter" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.gpio" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.intc" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.pm" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.tc" eidref="atmel.asf" />
+    <require-external idref="avr32.drivers.usart" eidref="atmel.asf" />
+    <require-external idref="common.boards" eidref="atmel.asf" />
+    <require-external idref="common.services.freertos.demo.common.minimal" eidref="atmel.asf" />
+    <require-external idref="common.services.freertos.uc3_example" eidref="atmel.asf" />
+    <require-external idref="common.services.os.freertos" eidref="atmel.asf" />
+    <build type="online-help" value="" subtype="module-help-page" />
+    <generator value="xdk_avr32gcc" />
+    <toolchain-config name="avr32gcc.common.outputfiles.hex" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.common.outputfiles.lss" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.common.outputfiles.eep" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.common.outputfiles.srec" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.optimization.level" value="Optimize for size (-Os)" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.optimization.OtherFlags" value="-fdata-sections" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.optimization.PrepareFunctionsForGarbageCollection" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.optimization.UseAssemblerForPseudoInstructions" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.warnings.AllWarnings" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.compiler.miscellaneous.OtherFlags" value="-std=gnu99 -fno-strict-aliasing -Wstrict-prototypes -Wmissing-prototypes -Werror-implicit-function-declaration -Wpointer-arith -mrelax -mno-cond-exec-before-reload" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.linker.optimization.GarbageCollectUnusedSections" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.linker.optimization.PutReadOnlyDataInWritableDataSection" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.linker.optimization.AllowDirectReferencesToDataSection" value="True" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.linker.miscellaneous.LinkerFlags" value="-Wl,--relax -T../src/ASF/avr32/utils/linker_scripts/at32uc3a/0512/gcc/link_uc3a0512.lds -Wl,-e,_trampoline" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.assembler.general.AssemblerFlags" value="-mrelax" toolchain="avr32gcc" />
+    <toolchain-config name="avr32gcc.preprocessingassembler.general.AssemblerFlags" value="-mrelax -DBOARD=EVK1100 -D__FREERTOS__" toolchain="avr32gcc" />
+  </project>
+</asf>
+
