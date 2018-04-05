@@ -28,9 +28,11 @@
 #include "semphr.h"
 
 // tasks
-static void vOutputLCD(void *pvParameters);
-static void vCalculatePower(void *pvParameters);
-static void vReadingADC(void *pvParameters);
+static void ADC_Cmd(void *pvParameters);
+static void UART_Cmd_RX(void *pvParameters);
+static void AlarmMsgQ(void *pvParameters);
+static void UART_SendSample(void *pvParameters);
+static void LED_Flash(void *pvParameters);
 
 // initialization functions
 void initialiseLCD(void);
@@ -87,26 +89,46 @@ int main(void) {
 
 	/* Start the demo tasks defined within this file. */
 	xTaskCreate(
-	vOutputLCD
-	, (const signed portCHAR *)"Output"
+	ADC_Cmd
+	, (const signed portCHAR *)"ADC commande"
 	, configMINIMAL_STACK_SIZE*3
 	, NULL
 	, tskIDLE_PRIORITY
 	, NULL );
+	
 	xTaskCreate(
-	vCalculatePower
-	, (const signed portCHAR *)"Calcul"
+	UART_Cmd_RX
+	, (const signed portCHAR *)"UART commande"
 	, configMINIMAL_STACK_SIZE
 	, NULL
 	, tskIDLE_PRIORITY + 2
 	, NULL );
+	
 	xTaskCreate(
-	vReadingADC
-	, (const signed portCHAR *)"Reading"
+	AlarmMsgQ
+	, (const signed portCHAR *)"Message alarme"
 	, configMINIMAL_STACK_SIZE
 	, NULL
 	, tskIDLE_PRIORITY + 1
 	, NULL );
+	
+	xTaskCreate(
+	UART_SendSample
+	, (const signed portCHAR *)"Envoi de l'echantillon"
+	, configMINIMAL_STACK_SIZE
+	, NULL
+	, tskIDLE_PRIORITY + 1
+	, NULL );
+
+
+	xTaskCreate(
+	LED_Flash
+	, (const signed portCHAR *)"Led flash"
+	, configMINIMAL_STACK_SIZE
+	, NULL
+	, tskIDLE_PRIORITY + 1
+	, NULL );
+
 
 	/* Start the scheduler. */
 	vTaskStartScheduler();
@@ -116,7 +138,7 @@ int main(void) {
 	return 0;
 }
 
-static void ADC_Cmd(void *pvParameters) {
+static void ADC_Cmd() {
 
 	//int i;
 
@@ -194,7 +216,7 @@ static void ADC_Cmd(void *pvParameters) {
 	}
 }
 
-static void UART_Cmd_RX(void *pvParameters) {
+static void UART_Cmd_RX() {
 	
 	xSemaphoreTake(UART_SEMAPHORE,portMAX_DELAY)	
 	
@@ -226,7 +248,7 @@ static void UART_Cmd_RX(void *pvParameters) {
 	
 }
 
-static void vCalculatePower(void *pvParameters) {
+static void AlarmMsgQ(){
 
 	int power = 0;
 	int tempDesired = 0;
@@ -272,6 +294,18 @@ static void vCalculatePower(void *pvParameters) {
 		vTaskDelay(1000);
 	}
 }
+
+static void LED_Flash(){
+	
+}
+
+static void UART_SendSample(){
+	
+}
+
+
+
+
 
 static void vOutputLCD(void *pvParameters) {
 
