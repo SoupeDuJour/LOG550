@@ -7,20 +7,23 @@
 #include <stdio.h>
 #include <stdlib.h>
 #include <string.h>
+#include <stdint.h>
+
 
 /* Environment header files. */
-#include "power_clocks_lib.h"
-
+#include "adc.h"
 #include "board.h"
 #include "compiler.h"
-#include "dip204.h"
-#include "intc.h"
-#include "gpio.h"
-#include "pm.h"
-#include "delay.h"
-#include "spi.h"
 #include "conf_clock.h"
-#include "adc.h"
+#include "delay.h"
+#include "dip204.h"
+#include "gpio.h"
+#include "intc.h"
+#include "pm.h"
+#include "power_clocks_lib.h"
+#include "spi.h"
+#include "usart.h"
+
 
 /* Scheduler header files. */
 #include "FreeRTOS.h"
@@ -33,9 +36,13 @@ static void UART_Cmd_RX(void *pvParameters);
 static void AlarmMsgQ(void *pvParameters);
 static void UART_SendSample(void *pvParameters);
 static void LED_Flash(void *pvParameters);
+//static void LED0_Flash(void *pvParameters);
+//static void LED1_Flash(void *pvParameters);
+//static void LED2_Flash(void *pvParameters);
 
 // initialization functions
 void initialiseLCD(void);
+void init_usart(void);
 
 // global var
 volatile int POWER = 0;
@@ -43,17 +50,26 @@ volatile int TEMPERATURE_DESIRED = 0;
 volatile int TEMPERATURE_ROOM = 0;
 volatile uint8_t adc_conversion_indices[2] = {};
 volatile unsigned long adc_conversion_values[2] = {};
-volatile char uart_received_command = 0;
+//volatile char uart_received_command = 0;
 volatile uint8_t messageQueueError = 0;
+U8 AQUIS_START = 0;
+
+volatile U8 adc_value_pot = 0;
+volatile U8 adc_value_light = 0;
 
 // semaphore
 static xSemaphoreHandle POWER_SEMAPHORE = NULL;
 static xSemaphoreHandle POTENTIOMETER_SEMAPHORE = NULL;
 static xSemaphoreHandle LIGHT_SEMAPHORE = NULL;
 static xSemaphoreHandle UART_SEMAPHORE = NULL;
+static xSemaphoreHandle FLASH_LED0_SEMAPHORE = NULL;
+static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
+static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
+/*
 static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED3_SEMAPHORE = NULL;
+*/
 
 static const unsigned short temperature_code[] = { 0x3B4, 0x3B0, 0x3AB, 0x3A6,
 	0x3A0, 0x39A, 0x394, 0x38E, 0x388, 0x381, 0x37A, 0x373, 0x36B, 0x363,
@@ -78,23 +94,26 @@ int main(void) {
 	LED_Display(0);
 
 	initialiseLCD();
+	init_usart();
 
 	POWER_SEMAPHORE = xSemaphoreCreateCounting(1,1);
-	POTENTIOMETER_SEMAPHORE = xSemaphoreCreateCounting(1,0);
-	LIGHT_SEMAPHORE = xSemaphoreCreateCounting(1,0);
+	POTENTIOMETER_SEMAPHORE = xSemaphoreCreateCounting(1,1);
+	LIGHT_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	UART_SEMAPHORE = xSemaphoreCreateCounting(1,1);
+	FLASH_LED0_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLASH_LED1_SEMAPHORE = xSemaphoreCreateCounting(1,1);
-	FLASH_LED2_SEMAPHORE = xSemaphoreCreateCounting(1,0);
-	FLASH_LED3_SEMAPHORE = xSemaphoreCreateCounting(1,0);
-
+	FLASH_LED2_SEMAPHORE = xSemaphoreCreateCounting(1,1);
+	
+	
 	/* Start the demo tasks defined within this file. */
 	xTaskCreate(
-	ADC_Cmd
-	, (const signed portCHAR *)"ADC commande"
-	, configMINIMAL_STACK_SIZE*3
+	LED_Flash
+	, (const signed portCHAR *)"Led flash"
+	, configMINIMAL_STACK_SIZE
 	, NULL
-	, tskIDLE_PRIORITY
+	, tskIDLE_PRIORITY + 1
 	, NULL );
+
 	
 	xTaskCreate(
 	UART_Cmd_RX
@@ -104,31 +123,35 @@ int main(void) {
 	, tskIDLE_PRIORITY + 2
 	, NULL );
 	
+	
 	xTaskCreate(
-	AlarmMsgQ
-	, (const signed portCHAR *)"Message alarme"
-	, configMINIMAL_STACK_SIZE
+	ADC_Cmd
+	, (const signed portCHAR *)"ADC commande"
+	, configMINIMAL_STACK_SIZE*3
 	, NULL
-	, tskIDLE_PRIORITY + 1
+	, tskIDLE_PRIORITY + 3
 	, NULL );
 	
 	xTaskCreate(
 	UART_SendSample
-	, (const signed portCHAR *)"Envoi de l'echantillon"
+	, (const signed portCHAR *)"SendSample"
 	, configMINIMAL_STACK_SIZE
 	, NULL
-	, tskIDLE_PRIORITY + 1
+	, tskIDLE_PRIORITY 
 	, NULL );
-
+	
+	/*
 
 	xTaskCreate(
-	LED_Flash
-	, (const signed portCHAR *)"Led flash"
+	AlarmMsgQ
+	, (const signed portCHAR *)"Alarm"
 	, configMINIMAL_STACK_SIZE
 	, NULL
-	, tskIDLE_PRIORITY + 1
+	, tskIDLE_PRIORITY + 3
 	, NULL );
-
+	
+	
+	*/
 
 	/* Start the scheduler. */
 	vTaskStartScheduler();
@@ -138,117 +161,206 @@ int main(void) {
 	return 0;
 }
 
-static void ADC_Cmd() {
 
+void initialiseLCD(void) {
+	static const gpio_map_t DIP204_SPI_GPIO_MAP = {
+		{ DIP204_SPI_SCK_PIN,	DIP204_SPI_SCK_FUNCTION }, // SPI Clock.
+		{ DIP204_SPI_MISO_PIN, DIP204_SPI_MISO_FUNCTION }, // MISO.
+		{ DIP204_SPI_MOSI_PIN, DIP204_SPI_MOSI_FUNCTION }, // MOSI.
+		{ DIP204_SPI_NPCS_PIN, DIP204_SPI_NPCS_FUNCTION } // Chip Select NPCS.
+	};
+
+	// Disable all interrupts.
+	Disable_global_interrupt();
+
+	// init the interrupts
+	INTC_init_interrupts();
+
+	// Enable all interrupts.
+	Enable_global_interrupt();
+
+	// add the spi options driver structure for the LCD DIP204
+	spi_options_t spiOptions = {
+		.reg = DIP204_SPI_NPCS,
+		.baudrate = 1000000,
+		.bits = 8,
+		.spck_delay = 0,
+		.trans_delay = 8, // <---- Very importent with the new compilor in atmel 6.x
+		.stay_act = 1,
+		.spi_mode = 0,
+		.modfdis = 1
+	};
+
+	// Assign I/Os to SPI
+	gpio_enable_module(DIP204_SPI_GPIO_MAP, sizeof(DIP204_SPI_GPIO_MAP)
+	/ sizeof(DIP204_SPI_GPIO_MAP[0]));
+
+	// Initialize as master
+	spi_initMaster(DIP204_SPI, &spiOptions);
+
+	// Set selection mode: variable_ps, pcs_decode, delay
+	spi_selectionMode(DIP204_SPI, 0, 0, 0);
+
+	// Enable SPI
+	spi_enable(DIP204_SPI);
+
+	// setup chip registers
+	spi_setupChipReg(DIP204_SPI, &spiOptions, FOSC0);
+
+	// initialize LCD
+	dip204_init(backlight_PWM, true);
+
+}
+
+void init_usart(void){
+	static const gpio_map_t USART_GPIO_MAP =
+	{
+		{AVR32_USART1_RXD_0_0_PIN, AVR32_USART1_RXD_0_0_FUNCTION},
+		{AVR32_USART1_TXD_0_0_PIN, AVR32_USART1_TXD_0_0_FUNCTION}
+	};
+	// Assigner les pins du GPIO a etre utiliser par le USART1.
+	gpio_enable_module(USART_GPIO_MAP,sizeof(USART_GPIO_MAP) / sizeof(USART_GPIO_MAP[0]));
+
+	static const usart_options_t USART_OPTIONS =
+	{
+		.baudrate = 57600,
+		.charlength = 8,
+		.paritytype = USART_NO_PARITY,
+		.stopbits = USART_1_STOPBIT,
+		.channelmode = USART_NORMAL_CHMODE
+	};
+
+	// Initialise le USART1 en mode seriel RS232, a PBA=48/2MHz.
+	usart_init_rs232(&AVR32_USART1, &USART_OPTIONS, FOSC0);
+}
+
+static void LED_Flash(void *pvParameters){
+	U8 aquis_start = 0;
+	U8 myFlagLCD         = 0;
+	U16 mySamplesSent    = 0;
+
+	while (1)
+	{
+		gpio_tgl_gpio_pin(LED0_GPIO);
+
+		xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
+		aquis_start = AQUIS_START;
+		xSemaphoreGive(FLASH_LED1_SEMAPHORE);
+
+		if(aquis_start == 1)
+			gpio_tgl_gpio_pin(LED1_GPIO);
+		else
+			gpio_set_gpio_pin(LED1_GPIO);
+
+		if(myFlagLCD == 1)
+			gpio_clr_gpio_pin(LED2_GPIO);
+
+		vTaskDelay(200);
+	}
+}
+
+static void UART_Cmd_RX(void *pvParameters) {
+	
+	char uart_received_command = 0;
+	char str[8];
+	
+	while(1){
+		if (AVR32_USART1.csr & (AVR32_USART_CSR_RXRDY_MASK)){
+			xSemaphoreTake(UART_SEMAPHORE, portMAX_DELAY);
+			uart_received_command = (AVR32_USART1.rhr & AVR32_USART_RHR_RXCHR_MASK);
+			xSemaphoreGive(UART_SEMAPHORE);
+				
+			if (uart_received_command == 's' || uart_received_command == 'S'){
+				gpio_clr_gpio_pin(LED6_GPIO);
+				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
+				AQUIS_START = 1;
+				xSemaphoreGive(FLASH_LED1_SEMAPHORE);
+			}
+			else if (uart_received_command == 'x' || uart_received_command == 'X'){
+				gpio_clr_gpio_pin(LED7_GPIO);
+				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
+				AQUIS_START = 0;
+				xSemaphoreGive(FLASH_LED1_SEMAPHORE);
+			}
+		}
+		
+		vTaskDelay(250);
+	}
+	
+}
+
+static void ADC_Cmd(void *pvParameters) {
 	//int i;
 
 	// GPIO pin/adc-function map.
-	static const gpio_map_t ADC_GPIO_MAP = { 
-		{ ADC_LIGHT_PIN,	ADC_LIGHT_FUNCTION }, 
-		{ ADC_POTENTIOMETER_PIN,	ADC_POTENTIOMETER_FUNCTION } 
+	static const gpio_map_t ADC_GPIO_MAP = {
+		{ ADC_LIGHT_PIN,			ADC_LIGHT_FUNCTION },
+		{ ADC_POTENTIOMETER_PIN,	ADC_POTENTIOMETER_FUNCTION }
 	};
-
-	volatile avr32_adc_t *adc = &AVR32_ADC; // ADC IP registers address
+	
+	volatile avr32_adc_t *adc = &AVR32_ADC;
 
 	// Assign the on-board sensors to their ADC channel.
 	unsigned short adc_channel_pot = ADC_POTENTIOMETER_CHANNEL;
 	unsigned short adc_channel_light = ADC_LIGHT_CHANNEL;
 
 	// Assign and enable GPIO pins to the ADC function.
-	gpio_enable_module(ADC_GPIO_MAP, sizeof(ADC_GPIO_MAP) / sizeof(ADC_GPIO_MAP[0]));
+	gpio_enable_module(ADC_GPIO_MAP, 1);
 
 	// configure ADC
 	// Lower the ADC clock to match the ADC characteristics (because we configured
 	// the CPU clock to 12MHz, and the ADC clock characteristics are usually lower;
 	// cf. the ADC Characteristic section in the datasheet).
-	AVR32_ADC.mr |= 0x1 << AVR32_ADC_MR_PRESCAL_OFFSET;
-	AVR32_ADC.ier = AVR32_ADC_DRDY_MASK;
+	//AVR32_ADC.mr |= 0x1 << AVR32_ADC_MR_PRESCAL_OFFSET;
+	//AVR32_ADC.ier = AVR32_ADC_DRDY_MASK;
 	adc_configure(adc);
 
 	// Enable the ADC channels.
 	adc_enable(adc, adc_channel_pot);
 	adc_enable(adc, adc_channel_light);
 
-	while (1) {
 
+	while (1) {
 			// Trigger the conversion
 			adc_start(adc);
 
 			// get value for the potentiometer adc channel
-			/*
-			adc_value_pot = adc_get_value(adc, adc_channel_pot);
-			adc_value_light = adc_get_value(adc, adc_channel_light);
-			*/
+			
+			//adc_value_pot = adc_get_value(adc, adc_channel_pot);
+			//adc_value_light = adc_get_value(adc, adc_channel_light);
 					
-		
+
 			xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
-
-
 			if (adc_check_eoc(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL))
 			{
 				// conversion for potentiometer
-				adc_conversion_indices[0]++;
-				adc_conversion_values[0] = adc_get_value(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL);
+				adc_value_pot = adc_get_value(&AVR32_ADC, 1);
+				adc_value_pot = (((adc_value_pot) >> 3) << 3);
+				//adc_value_pot =  ((adc_value_pot) & 0b1111111000) ;
+				//adc_conversion_indices[0]++;
+				//adc_conversion_values[0] = adc_get_value(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL);
 			}
-
 			xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
 		
 		
 			xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
-
-
 			if (adc_check_eoc(&AVR32_ADC, ADC_LIGHT_CHANNEL))
 			{
+				adc_value_light = adc_get_value(&AVR32_ADC, ADC_LIGHT_CHANNEL);
+				//adc_value_light = (((adc_value_light) >> 3) << 1) | 1;
+				adc_value_light = (((adc_value_light) & 0b1111111000)) | 1;
 				// conversion for light sensor
-				adc_conversion_indices[1]++;
-				adc_conversion_values[1] = adc_get_value(&AVR32_ADC, ADC_LIGHT_CHANNEL);
+				//adc_conversion_indices[1]++;
+				//adc_conversion_values[1] = adc_get_value(&AVR32_ADC, ADC_LIGHT_CHANNEL);
 			}
-
 			xSemaphoreGive(LIGHT_SEMAPHORE);
-			
-			
-			//A CHANGER, BESOIN DE LA LED3 QUAND MESSAGE QUEUE DEBORDE
-			if (0 == 1){
-				xSemaphoreGive(FLASH_LED3_SEMAPHORE)
-			}
-			
-		vTaskDelay(250);
+		
+		vTaskDelay(1);
 	}
 }
 
-static void UART_Cmd_RX() {
-	
-	xSemaphoreTake(UART_SEMAPHORE,portMAX_DELAY)	
-	
-	if (usart_test_hit(&AVR32_USART0))
-	{
-		//get command
-		uart_received_command = (AVR32_USART0.rhr & AVR32_USART_RHR_RXCHR_MASK) >> AVR32_USART_RHR_RXCHR_OFFSET;
-		
-		if (uart_received_command == 's')
-		{
-			xSemaphoreGive(POTENTIOMETER_SEMAPHORE, portMAX_DELAY)
-			xSemaphoreGive(LIGHT_SEMAPHORE, portMAX_DELAY)
-			xSemaphoreGive(FLASH_LED2_SEMAPHORE, portMAX_DELAY)
-			xSemaphoreGive(FLASH_LED3_SEMAPHORE, portMAX_DELAY)
-		}
-		else if (uart_received_command == 'x')
-		{
-			xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY)
-			xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY)
-			xSemaphoreTake(FLASH_LED2_SEMAPHORE, portMAX_DELAY)
-			
-			if(messageQueueError==0){
-				xSemaphoreTake(FLASH_LED3_SEMAPHORE, portMAX_DELAY)
-			}
-			
-		}
-	}	
-	xSemaphoreGive(UART_SEMAPHORE)
-	
-}
 
-static void AlarmMsgQ(){
+static void AlarmMsgQ(void *pvParameters){
 
 	int power = 0;
 	int tempDesired = 0;
@@ -295,17 +407,30 @@ static void AlarmMsgQ(){
 	}
 }
 
-static void LED_Flash(){
-	
+
+static void UART_SendSample(void *pvParameters){
+	U8 adc_pot = 0;
+	U8 adc_lig = 0;
+
+	while (1)
+	{
+		
+		xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
+		adc_pot = adc_value_pot;
+		xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
+		AVR32_USART1.thr = adc_pot;
+		//AVR32_USART1.thr = (adc_pot << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK; 
+		
+		xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
+		adc_lig = adc_value_light;
+		xSemaphoreGive(LIGHT_SEMAPHORE);
+		AVR32_USART1.thr = adc_lig;
+		//AVR32_USART1.thr = (adc_lig << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK;
+		
+		//sampleSent++;
+		vTaskDelay(1);
+	}
 }
-
-static void UART_SendSample(){
-	
-}
-
-
-
-
 
 static void vOutputLCD(void *pvParameters) {
 
@@ -456,52 +581,4 @@ static void vOutputLCD(void *pvParameters) {
 		vTaskDelay(100);
 	}
 }
-void initialiseLCD(void) {
-	static const gpio_map_t DIP204_SPI_GPIO_MAP = {
-		{ DIP204_SPI_SCK_PIN,	DIP204_SPI_SCK_FUNCTION }, // SPI Clock.
-		{ DIP204_SPI_MISO_PIN, DIP204_SPI_MISO_FUNCTION }, // MISO.
-		{ DIP204_SPI_MOSI_PIN, DIP204_SPI_MOSI_FUNCTION }, // MOSI.
-		{ DIP204_SPI_NPCS_PIN, DIP204_SPI_NPCS_FUNCTION } // Chip Select NPCS.
-	};
 
-	// Disable all interrupts.
-	Disable_global_interrupt();
-
-	// init the interrupts
-	INTC_init_interrupts();
-
-	// Enable all interrupts.
-	Enable_global_interrupt();
-
-	// add the spi options driver structure for the LCD DIP204
-	spi_options_t spiOptions = {
-		.reg = DIP204_SPI_NPCS,
-		.baudrate = 1000000,
-		.bits = 8,
-		.spck_delay = 0,
-		.trans_delay = 8, // <---- Very importent with the new compilor in atmel 6.x
-		.stay_act = 1,
-		.spi_mode = 0,
-		.modfdis = 1
-	};
-
-	// Assign I/Os to SPI
-	gpio_enable_module(DIP204_SPI_GPIO_MAP, sizeof(DIP204_SPI_GPIO_MAP)
-	/ sizeof(DIP204_SPI_GPIO_MAP[0]));
-
-	// Initialize as master
-	spi_initMaster(DIP204_SPI, &spiOptions);
-
-	// Set selection mode: variable_ps, pcs_decode, delay
-	spi_selectionMode(DIP204_SPI, 0, 0, 0);
-
-	// Enable SPI
-	spi_enable(DIP204_SPI);
-
-	// setup chip registers
-	spi_setupChipReg(DIP204_SPI, &spiOptions, FOSC0);
-
-	// initialize LCD
-	dip204_init(backlight_PWM, true);
-
-}
