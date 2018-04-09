@@ -54,8 +54,8 @@ volatile unsigned long adc_conversion_values[2] = {};
 volatile uint8_t messageQueueError = 0;
 U8 AQUIS_START = 0;
 
-volatile U8 adc_value_pot = 0;
-volatile U8 adc_value_light = 0;
+volatile U16 adc_value_pot = 0;
+volatile U16 adc_value_light = 0;
 
 // semaphore
 static xSemaphoreHandle POWER_SEMAPHORE = NULL;
@@ -65,6 +65,8 @@ static xSemaphoreHandle UART_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED0_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
+static xSemaphoreHandle MESSAGEQ_SEMAPHORE = NULL;
+
 /*
 static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
@@ -103,7 +105,7 @@ int main(void) {
 	FLASH_LED0_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLASH_LED1_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLASH_LED2_SEMAPHORE = xSemaphoreCreateCounting(1,1);
-	
+	MESSAGEQ_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	
 	/* Start the demo tasks defined within this file. */
 	xTaskCreate(
@@ -138,6 +140,14 @@ int main(void) {
 	, configMINIMAL_STACK_SIZE
 	, NULL
 	, tskIDLE_PRIORITY 
+	, NULL );
+	
+	xTaskCreate(
+	AlarmMsgQ
+	, (const signed portCHAR *)"Alarm"
+	, configMINIMAL_STACK_SIZE
+	, NULL
+	, tskIDLE_PRIORITY + 4
 	, NULL );
 	
 	/*
@@ -230,30 +240,33 @@ void init_usart(void){
 		.channelmode = USART_NORMAL_CHMODE
 	};
 
-	// Initialise le USART1 en mode seriel RS232, a PBA=48/2MHz.
+	// Initialise le USART1 en mode seriel RS232
 	usart_init_rs232(&AVR32_USART1, &USART_OPTIONS, FOSC0);
 }
 
 static void LED_Flash(void *pvParameters){
 	U8 aquis_start = 0;
-	U8 myFlagLCD         = 0;
-	U16 mySamplesSent    = 0;
+	U16 mySamplesSent = 0;
 
 	while (1)
 	{
-		gpio_tgl_gpio_pin(LED0_GPIO);
+		
 
 		xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 		aquis_start = AQUIS_START;
 		xSemaphoreGive(FLASH_LED1_SEMAPHORE);
 
-		if(aquis_start == 1)
+		if(aquis_start == 1){
+			//gpio_set_gpio_pin(LED0_GPIO);
 			gpio_tgl_gpio_pin(LED1_GPIO);
-		else
+			gpio_tgl_gpio_pin(LED0_GPIO);
+			//gpio_tgl_gpio_pin(LED0_GPIO);
+		}
+		else {
 			gpio_set_gpio_pin(LED1_GPIO);
-
-		if(myFlagLCD == 1)
-			gpio_clr_gpio_pin(LED2_GPIO);
+			gpio_tgl_gpio_pin(LED0_GPIO);
+		}
+		
 
 		vTaskDelay(200);
 	}
@@ -271,13 +284,11 @@ static void UART_Cmd_RX(void *pvParameters) {
 			xSemaphoreGive(UART_SEMAPHORE);
 				
 			if (uart_received_command == 's' || uart_received_command == 'S'){
-				gpio_clr_gpio_pin(LED6_GPIO);
 				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 				AQUIS_START = 1;
 				xSemaphoreGive(FLASH_LED1_SEMAPHORE);
 			}
 			else if (uart_received_command == 'x' || uart_received_command == 'X'){
-				gpio_clr_gpio_pin(LED7_GPIO);
 				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 				AQUIS_START = 0;
 				xSemaphoreGive(FLASH_LED1_SEMAPHORE);
@@ -334,11 +345,8 @@ static void ADC_Cmd(void *pvParameters) {
 			if (adc_check_eoc(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL))
 			{
 				// conversion for potentiometer
-				adc_value_pot = adc_get_value(&AVR32_ADC, 1);
-				adc_value_pot = (((adc_value_pot) >> 3) << 3);
-				//adc_value_pot =  ((adc_value_pot) & 0b1111111000) ;
-				//adc_conversion_indices[0]++;
-				//adc_conversion_values[0] = adc_get_value(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL);
+				adc_value_pot = adc_get_value(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL);
+				adc_value_pot = ((adc_value_pot & 0b1111111000));
 			}
 			xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
 		
@@ -347,13 +355,14 @@ static void ADC_Cmd(void *pvParameters) {
 			if (adc_check_eoc(&AVR32_ADC, ADC_LIGHT_CHANNEL))
 			{
 				adc_value_light = adc_get_value(&AVR32_ADC, ADC_LIGHT_CHANNEL);
-				//adc_value_light = (((adc_value_light) >> 3) << 1) | 1;
 				adc_value_light = (((adc_value_light) & 0b1111111000)) | 1;
-				// conversion for light sensor
-				//adc_conversion_indices[1]++;
-				//adc_conversion_values[1] = adc_get_value(&AVR32_ADC, ADC_LIGHT_CHANNEL);
 			}
 			xSemaphoreGive(LIGHT_SEMAPHORE);
+			
+			xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
+			messageQueueError = 1;
+			xSemaphoreGive(MESSAGEQ_SEMAPHORE);
+			
 		
 		vTaskDelay(1);
 	}
@@ -361,71 +370,42 @@ static void ADC_Cmd(void *pvParameters) {
 
 
 static void AlarmMsgQ(void *pvParameters){
-
-	int power = 0;
-	int tempDesired = 0;
-	int tempRoom = 0;
-	int tempValue = 0;
-
+	U8 msgQFlag = 0;
 	while (1) {
+		
+		xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
+		msgQFlag = messageQueueError;
+		xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 
-		// Get the data
-		xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
-		tempDesired = TEMPERATURE_DESIRED;
-		xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
-
-		xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
-		tempRoom = TEMPERATURE_ROOM;
-		xSemaphoreGive(LIGHT_SEMAPHORE);
-
-		// calculate the power base on the room temperature and the desired temperature.
-		if (tempDesired <= tempRoom)
-		{
-			power = 0;
-		}
-		else
-		{
-			//tempDesired > tempRoom
-			tempValue= tempDesired - tempRoom;
-			if (tempValue > 6)
-			{
-				power = 100;
-			}
-			else
-			{
-				power = (int)(((double)tempValue / 6) * 100);
-			}
-		}
-
-		xSemaphoreTake(POWER_SEMAPHORE, portMAX_DELAY);
-
-		POWER = power;
-
-		xSemaphoreGive(POWER_SEMAPHORE);
-
-		vTaskDelay(1000);
+		if(msgQFlag == 1)
+			gpio_clr_gpio_pin(LED2_GPIO);
+		
+		vTaskDelay(1);
 	}
 }
 
 
 static void UART_SendSample(void *pvParameters){
-	U8 adc_pot = 0;
-	U8 adc_lig = 0;
+	U16 adc_pot = 0;
+	U16 adc_lig = 0;
 
 	while (1)
 	{
 		
 		xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
-		adc_pot = adc_value_pot;
+		adc_pot = (adc_value_pot >> 2);
 		xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
-		AVR32_USART1.thr = adc_pot;
-		//AVR32_USART1.thr = (adc_pot << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK; 
+		//AVR32_USART1.thr = adc_pot;
+		AVR32_USART1.thr = (adc_pot << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK;
 		
 		xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
-		adc_lig = adc_value_light;
+		adc_lig = (adc_value_light >> 2);
 		xSemaphoreGive(LIGHT_SEMAPHORE);
-		AVR32_USART1.thr = adc_lig;
-		//AVR32_USART1.thr = (adc_lig << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK;
+		AVR32_USART1.thr = (adc_lig << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK | 1;
+		
+		xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
+		messageQueueError = 0;
+		xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 		
 		//sampleSent++;
 		vTaskDelay(1);
