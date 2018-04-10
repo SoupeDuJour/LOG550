@@ -1,7 +1,28 @@
 /*****************************************************************************
-* Auteur : Maxime Turenne
-* Copyright : Maxime Turenne
-* Description: Demo d'utilisation de FreeRTOS dans le cadre d'un thermostate numérique.
+*
+*	Prototype 2
+*	Auteurs: Sophie Leduc Major, Paul Leboyer
+*	LED_Flash()
+*		Effectue le clignotement des LEDs au 200msec.
+*		LED1 clignote toujours dès que votre microcontrôleur est alimenté.
+*		LED2 clignote lorsque l’acquisition est en service.
+*		LED3 s’allume et reste allumé si le « Message Queue » déborde au moins une fois.
+*	UART_Cmd_RX()
+*		Vérifie, à chaque 200msec, si des commandes sont reçues par le UART.
+*		Si une commande est reçue, traiter celle-ci et envoyer l’ordre d’arrêt ou de départ à la tâche ADC_Cmd().
+*	UART_SendSample()
+*		Vide le « Message Queue » et envoi les échantillons au UART pour une transmission en direction du PC.
+*	ADC_Cmd()
+*		Cette tâche démarre les conversions, obtient les échantillons numérisés et les place dans le « Message Queue ». Ceci doit être fait à la bonne vitesse.
+*		Si le « Message Queue » est plein, envoie l’information à la tâche AlarmMsgQ().
+*	AlarmMsgQ()
+*		Cette tâche est réveillé seulement si un débordement de la « Message Queue » survient. Elle commande l’allumage du LED3 en informant la tâche LED_Flash().
+*	
+*	Projet Squelette
+*	Auteur : Maxime Turenne
+*	Copyright : Maxime Turenne
+*	Description: Demo d'utilisation de FreeRTOS dans le cadre d'un thermostate numérique.
+*
 */
 
 #include <stdio.h>
@@ -36,9 +57,6 @@ static void UART_Cmd_RX(void *pvParameters);
 static void AlarmMsgQ(void *pvParameters);
 static void UART_SendSample(void *pvParameters);
 static void LED_Flash(void *pvParameters);
-//static void LED0_Flash(void *pvParameters);
-//static void LED1_Flash(void *pvParameters);
-//static void LED2_Flash(void *pvParameters);
 
 // initialization functions
 void initialiseLCD(void);
@@ -50,10 +68,9 @@ volatile int TEMPERATURE_DESIRED = 0;
 volatile int TEMPERATURE_ROOM = 0;
 volatile uint8_t adc_conversion_indices[2] = {};
 volatile unsigned long adc_conversion_values[2] = {};
-//volatile char uart_received_command = 0;
-volatile uint8_t messageQueueError = 0;
+volatile uint8_t messageQueue = 0;
 U8 AQUIS_START = 0;
-
+volatile uint8_t flagError = 0;
 volatile U16 adc_value_pot = 0;
 volatile U16 adc_value_light = 0;
 
@@ -66,12 +83,7 @@ static xSemaphoreHandle FLASH_LED0_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
 static xSemaphoreHandle MESSAGEQ_SEMAPHORE = NULL;
-
-/*
-static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
-static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
-static xSemaphoreHandle FLASH_LED3_SEMAPHORE = NULL;
-*/
+static xSemaphoreHandle FLAGERROR_SEMAPHORE = NULL;
 
 static const unsigned short temperature_code[] = { 0x3B4, 0x3B0, 0x3AB, 0x3A6,
 	0x3A0, 0x39A, 0x394, 0x38E, 0x388, 0x381, 0x37A, 0x373, 0x36B, 0x363,
@@ -106,6 +118,7 @@ int main(void) {
 	FLASH_LED1_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLASH_LED2_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	MESSAGEQ_SEMAPHORE = xSemaphoreCreateCounting(1,1);
+	FLAGERROR_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	
 	/* Start the demo tasks defined within this file. */
 	xTaskCreate(
@@ -115,7 +128,6 @@ int main(void) {
 	, NULL
 	, tskIDLE_PRIORITY + 1
 	, NULL );
-
 	
 	xTaskCreate(
 	UART_Cmd_RX
@@ -124,7 +136,6 @@ int main(void) {
 	, NULL
 	, tskIDLE_PRIORITY + 2
 	, NULL );
-	
 	
 	xTaskCreate(
 	ADC_Cmd
@@ -149,19 +160,6 @@ int main(void) {
 	, NULL
 	, tskIDLE_PRIORITY + 4
 	, NULL );
-	
-	/*
-
-	xTaskCreate(
-	AlarmMsgQ
-	, (const signed portCHAR *)"Alarm"
-	, configMINIMAL_STACK_SIZE
-	, NULL
-	, tskIDLE_PRIORITY + 3
-	, NULL );
-	
-	
-	*/
 
 	/* Start the scheduler. */
 	vTaskStartScheduler();
@@ -246,27 +244,26 @@ void init_usart(void){
 
 static void LED_Flash(void *pvParameters){
 	U8 aquis_start = 0;
-	U16 mySamplesSent = 0;
 
 	while (1)
 	{
-		
-
+		// get command to start sampling
 		xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 		aquis_start = AQUIS_START;
 		xSemaphoreGive(FLASH_LED1_SEMAPHORE);
 
 		if(aquis_start == 1){
-			//gpio_set_gpio_pin(LED0_GPIO);
+			// if acquisition is started, flash led 2
+			// always flash led 1
 			gpio_tgl_gpio_pin(LED1_GPIO);
 			gpio_tgl_gpio_pin(LED0_GPIO);
-			//gpio_tgl_gpio_pin(LED0_GPIO);
 		}
 		else {
+			// if acquisition is stopped, stop led 2 flash
+			// always flash led 1
 			gpio_set_gpio_pin(LED1_GPIO);
 			gpio_tgl_gpio_pin(LED0_GPIO);
 		}
-		
 
 		vTaskDelay(200);
 	}
@@ -275,19 +272,22 @@ static void LED_Flash(void *pvParameters){
 static void UART_Cmd_RX(void *pvParameters) {
 	
 	char uart_received_command = 0;
-	char str[8];
 	
 	while(1){
 		if (AVR32_USART1.csr & (AVR32_USART_CSR_RXRDY_MASK)){
+			
+			// get key command and store it
 			xSemaphoreTake(UART_SEMAPHORE, portMAX_DELAY);
 			uart_received_command = (AVR32_USART1.rhr & AVR32_USART_RHR_RXCHR_MASK);
 			xSemaphoreGive(UART_SEMAPHORE);
 				
+			// if key command is 's'; start sampling
 			if (uart_received_command == 's' || uart_received_command == 'S'){
 				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 				AQUIS_START = 1;
 				xSemaphoreGive(FLASH_LED1_SEMAPHORE);
 			}
+			// if key command is 'x'; stop sampling
 			else if (uart_received_command == 'x' || uart_received_command == 'X'){
 				xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 				AQUIS_START = 0;
@@ -295,13 +295,15 @@ static void UART_Cmd_RX(void *pvParameters) {
 			}
 		}
 		
-		vTaskDelay(250);
+		vTaskDelay(200);
 	}
 	
 }
 
 static void ADC_Cmd(void *pvParameters) {
 	//int i;
+	
+	U8 msgQ = 0;
 
 	// GPIO pin/adc-function map.
 	static const gpio_map_t ADC_GPIO_MAP = {
@@ -322,8 +324,6 @@ static void ADC_Cmd(void *pvParameters) {
 	// Lower the ADC clock to match the ADC characteristics (because we configured
 	// the CPU clock to 12MHz, and the ADC clock characteristics are usually lower;
 	// cf. the ADC Characteristic section in the datasheet).
-	//AVR32_ADC.mr |= 0x1 << AVR32_ADC_MR_PRESCAL_OFFSET;
-	//AVR32_ADC.ier = AVR32_ADC_DRDY_MASK;
 	adc_configure(adc);
 
 	// Enable the ADC channels.
@@ -335,22 +335,17 @@ static void ADC_Cmd(void *pvParameters) {
 			// Trigger the conversion
 			adc_start(adc);
 
-			// get value for the potentiometer adc channel
-			
-			//adc_value_pot = adc_get_value(adc, adc_channel_pot);
-			//adc_value_light = adc_get_value(adc, adc_channel_light);
-					
-
+			// get value for the potentiometer adc channel					
 			xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
 			if (adc_check_eoc(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL))
 			{
-				// conversion for potentiometer
+				// conversion for potentiometer with relevant bits by applying mask	
 				adc_value_pot = adc_get_value(&AVR32_ADC, ADC_POTENTIOMETER_CHANNEL);
 				adc_value_pot = ((adc_value_pot & 0b1111111000));
 			}
 			xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
 		
-		
+			// get value for the light adc channel with relevant bits by applying mask		
 			xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
 			if (adc_check_eoc(&AVR32_ADC, ADC_LIGHT_CHANNEL))
 			{
@@ -359,12 +354,19 @@ static void ADC_Cmd(void *pvParameters) {
 			}
 			xSemaphoreGive(LIGHT_SEMAPHORE);
 			
+			// message queue equals 1 when we have data to show
+			// but if it's already equal to 1 then we have an overflow
 			xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
-			messageQueueError = 1;
+			msgQ = messageQueue;
 			xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 			
+			if(msgQ != 0){
+				xSemaphoreGive(FLAGERROR_SEMAPHORE, portMAX_DELAY);
+				flagError = 1;
+				xSemaphoreTake(FLAGERROR_SEMAPHORE);
+			}
 		
-		vTaskDelay(1);
+		vTaskDelay(500);
 	}
 }
 
@@ -373,14 +375,16 @@ static void AlarmMsgQ(void *pvParameters){
 	U8 msgQFlag = 0;
 	while (1) {
 		
-		xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
-		msgQFlag = messageQueueError;
-		xSemaphoreGive(MESSAGEQ_SEMAPHORE);
+		xSemaphoreTake(FLAGERROR_SEMAPHORE, portMAX_DELAY);
+		msgQFlag = flagError;
+		xSemaphoreGive(FLAGERROR_SEMAPHORE);
 
+		// when flag error is equal to 1, overflow occurred
+		// flash led 3
 		if(msgQFlag == 1)
 			gpio_clr_gpio_pin(LED2_GPIO);
 		
-		vTaskDelay(1);
+		vTaskDelay(1000);
 	}
 }
 
@@ -391,23 +395,25 @@ static void UART_SendSample(void *pvParameters){
 
 	while (1)
 	{
+		// get adc potentiometer and light values and apply TXCHR mask & offset
 		
 		xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
 		adc_pot = (adc_value_pot >> 2);
 		xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
-		//AVR32_USART1.thr = adc_pot;
+
 		AVR32_USART1.thr = (adc_pot << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK;
 		
 		xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
 		adc_lig = (adc_value_light >> 2);
 		xSemaphoreGive(LIGHT_SEMAPHORE);
+		
 		AVR32_USART1.thr = (adc_lig << AVR32_USART_THR_TXCHR_OFFSET) & AVR32_USART_THR_TXCHR_MASK | 1;
 		
+		// message queue equals 0 when we have shown the data; we "empty" the message queue 
 		xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
-		messageQueueError = 0;
+		messageQueue = 0;
 		xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 		
-		//sampleSent++;
 		vTaskDelay(1);
 	}
 }
