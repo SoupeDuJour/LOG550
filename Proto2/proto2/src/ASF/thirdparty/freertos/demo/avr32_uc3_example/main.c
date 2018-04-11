@@ -63,40 +63,21 @@ void initialiseLCD(void);
 void init_usart(void);
 
 // global var
-volatile int POWER = 0;
-volatile int TEMPERATURE_DESIRED = 0;
-volatile int TEMPERATURE_ROOM = 0;
-volatile uint8_t adc_conversion_indices[2] = {};
-volatile unsigned long adc_conversion_values[2] = {};
 volatile uint8_t messageQueue = 0;
-U8 AQUIS_START = 0;
+volatile U8 AQUIS_START = 0;
 volatile uint8_t flagError = 0;
 volatile U16 adc_value_pot = 0;
 volatile U16 adc_value_light = 0;
+volatile U16 sampleCtr = 0;
 
 // semaphore
-static xSemaphoreHandle POWER_SEMAPHORE = NULL;
 static xSemaphoreHandle POTENTIOMETER_SEMAPHORE = NULL;
 static xSemaphoreHandle LIGHT_SEMAPHORE = NULL;
 static xSemaphoreHandle UART_SEMAPHORE = NULL;
-static xSemaphoreHandle FLASH_LED0_SEMAPHORE = NULL;
 static xSemaphoreHandle FLASH_LED1_SEMAPHORE = NULL;
-static xSemaphoreHandle FLASH_LED2_SEMAPHORE = NULL;
 static xSemaphoreHandle MESSAGEQ_SEMAPHORE = NULL;
 static xSemaphoreHandle FLAGERROR_SEMAPHORE = NULL;
-
-static const unsigned short temperature_code[] = { 0x3B4, 0x3B0, 0x3AB, 0x3A6,
-	0x3A0, 0x39A, 0x394, 0x38E, 0x388, 0x381, 0x37A, 0x373, 0x36B, 0x363,
-	0x35B, 0x353, 0x34A, 0x341, 0x338, 0x32F, 0x325, 0x31B, 0x311, 0x307,
-	0x2FC, 0x2F1, 0x2E6, 0x2DB, 0x2D0, 0x2C4, 0x2B8, 0x2AC, 0x2A0, 0x294,
-	0x288, 0x27C, 0x26F, 0x263, 0x256, 0x24A, 0x23D, 0x231, 0x225, 0x218,
-	0x20C, 0x200, 0x1F3, 0x1E7, 0x1DB, 0x1CF, 0x1C4, 0x1B8, 0x1AC, 0x1A1,
-	0x196, 0x18B, 0x180, 0x176, 0x16B, 0x161, 0x157, 0x14D, 0x144, 0x13A,
-	0x131, 0x128, 0x11F, 0x117, 0x10F, 0x106, 0xFE, 0xF7, 0xEF, 0xE8, 0xE1,
-	0xDA, 0xD3, 0xCD, 0xC7, 0xC0, 0xBA, 0xB5, 0xAF, 0xAA, 0xA4, 0x9F, 0x9A,
-	0x96, 0x91, 0x8C, 0x88, 0x84, 0x80, 0x7C, 0x78, 0x74, 0x71, 0x6D, 0x6A,
-	0x67, 0x64, 0x61, 0x5E, 0x5B, 0x58, 0x55, 0x53, 0x50, 0x4E, 0x4C, 0x49,
-0x47, 0x45, 0x43, 0x41, 0x3F, 0x3D, 0x3C, 0x3A, 0x38 };
+static xSemaphoreHandle SAMPLECTR_SEMAPHORE = NULL;
 
 int main(void) {
 	// Configure Osc0 in crystal mode (i.e. use of an external crystal source, with
@@ -110,15 +91,13 @@ int main(void) {
 	initialiseLCD();
 	init_usart();
 
-	POWER_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	POTENTIOMETER_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	LIGHT_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	UART_SEMAPHORE = xSemaphoreCreateCounting(1,1);
-	FLASH_LED0_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLASH_LED1_SEMAPHORE = xSemaphoreCreateCounting(1,1);
-	FLASH_LED2_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	MESSAGEQ_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	FLAGERROR_SEMAPHORE = xSemaphoreCreateCounting(1,1);
+	SAMPLECTR_SEMAPHORE = xSemaphoreCreateCounting(1,1);
 	
 	/* Start the demo tasks defined within this file. */
 	xTaskCreate(
@@ -142,7 +121,7 @@ int main(void) {
 	, (const signed portCHAR *)"ADC commande"
 	, configMINIMAL_STACK_SIZE*3
 	, NULL
-	, tskIDLE_PRIORITY + 3
+	, tskIDLE_PRIORITY 
 	, NULL );
 	
 	xTaskCreate(
@@ -150,7 +129,7 @@ int main(void) {
 	, (const signed portCHAR *)"SendSample"
 	, configMINIMAL_STACK_SIZE
 	, NULL
-	, tskIDLE_PRIORITY 
+	, tskIDLE_PRIORITY + 3
 	, NULL );
 	
 	xTaskCreate(
@@ -251,18 +230,18 @@ static void LED_Flash(void *pvParameters){
 		xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
 		aquis_start = AQUIS_START;
 		xSemaphoreGive(FLASH_LED1_SEMAPHORE);
-
+		gpio_tgl_gpio_pin(LED0_GPIO);
+		
 		if(aquis_start == 1){
 			// if acquisition is started, flash led 2
 			// always flash led 1
 			gpio_tgl_gpio_pin(LED1_GPIO);
-			gpio_tgl_gpio_pin(LED0_GPIO);
 		}
 		else {
 			// if acquisition is stopped, stop led 2 flash
 			// always flash led 1
 			gpio_set_gpio_pin(LED1_GPIO);
-			gpio_tgl_gpio_pin(LED0_GPIO);
+			
 		}
 
 		vTaskDelay(200);
@@ -324,6 +303,7 @@ static void ADC_Cmd(void *pvParameters) {
 	// Lower the ADC clock to match the ADC characteristics (because we configured
 	// the CPU clock to 12MHz, and the ADC clock characteristics are usually lower;
 	// cf. the ADC Characteristic section in the datasheet).
+	//AVR32_ADC.mr |= 0x1 << AVR32_ADC_MR_PRESCAL_OFFSET;
 	adc_configure(adc);
 
 	// Enable the ADC channels.
@@ -361,18 +341,33 @@ static void ADC_Cmd(void *pvParameters) {
 			xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 			
 			if(msgQ != 0){
-				xSemaphoreGive(FLAGERROR_SEMAPHORE, portMAX_DELAY);
+				xSemaphoreTake(FLAGERROR_SEMAPHORE, portMAX_DELAY);
 				flagError = 1;
-				xSemaphoreTake(FLAGERROR_SEMAPHORE);
+				xSemaphoreGive(FLAGERROR_SEMAPHORE);
 			}
-		
-		vTaskDelay(500);
+			U8 aqui = 0;
+			
+			xSemaphoreTake(FLASH_LED1_SEMAPHORE, portMAX_DELAY);
+			aqui = AQUIS_START;
+			xSemaphoreGive(FLASH_LED1_SEMAPHORE);
+			
+			if(aqui == 1){
+				xSemaphoreTake(MESSAGEQ_SEMAPHORE, portMAX_DELAY);
+				messageQueue = 1;
+				xSemaphoreGive(MESSAGEQ_SEMAPHORE);
+				
+			}
+			
+		vTaskDelay(1);
 	}
 }
 
 
 static void AlarmMsgQ(void *pvParameters){
 	U8 msgQFlag = 0;
+	U16 ctr = 0;
+	char str[8];
+	
 	while (1) {
 		
 		xSemaphoreTake(FLAGERROR_SEMAPHORE, portMAX_DELAY);
@@ -383,8 +378,19 @@ static void AlarmMsgQ(void *pvParameters){
 		// flash led 3
 		if(msgQFlag == 1)
 			gpio_clr_gpio_pin(LED2_GPIO);
+			
+			
+		xSemaphoreTake(SAMPLECTR_SEMAPHORE, portMAX_DELAY);
+		ctr = sampleCtr;
+		sprintf(str, "%d", ctr);
+		sampleCtr = 0;
+		xSemaphoreGive(SAMPLECTR_SEMAPHORE);
 		
-		vTaskDelay(1000);
+		dip204_set_cursor_position(1, 1);
+		dip204_write_string(str);
+		
+		
+		vTaskDelay(1);
 	}
 }
 
@@ -414,157 +420,14 @@ static void UART_SendSample(void *pvParameters){
 		messageQueue = 0;
 		xSemaphoreGive(MESSAGEQ_SEMAPHORE);
 		
+		xSemaphoreTake(SAMPLECTR_SEMAPHORE, portMAX_DELAY);
+		sampleCtr++;
+		xSemaphoreGive(SAMPLECTR_SEMAPHORE);
+		
+		//Change this value to 10 to force a overflow 
 		vTaskDelay(1);
 	}
 }
 
-static void vOutputLCD(void *pvParameters) {
 
-	const char *tempDesiredTitle = "Temp. target: 0"; // 15
-	const char *puissanceTitle = "Power: 0"; // 8
-	const char *tempTitle = "Temp. room: 0"; // 13
-	char str[8];
-	bool increase = true;
-	bool updateLights = true;
-	int power = 0;
-	unsigned char targetLeds = 0;
-
-	dip204_set_cursor_position(1, 1);
-
-	dip204_write_string(tempDesiredTitle);
-
-	dip204_set_cursor_position(1, 2);
-
-	dip204_write_string(tempTitle);
-
-	dip204_set_cursor_position(1, 3);
-
-	dip204_write_string(puissanceTitle);
-
-	dip204_hide_cursor();
-
-	int leds = 0;
-	while (1) {
-
-		// write throttle
-		dip204_set_cursor_position(15, 1);
-		dip204_write_string("    ");
-		dip204_set_cursor_position(15, 1);
-
-		xSemaphoreTake(POTENTIOMETER_SEMAPHORE, portMAX_DELAY);
-		sprintf(str, "%d C", TEMPERATURE_DESIRED);
-		xSemaphoreGive(POTENTIOMETER_SEMAPHORE);
-
-		dip204_write_string(str);
-
-		// write the temp
-		dip204_set_cursor_position(13, 2);
-		dip204_write_string("    ");
-		dip204_set_cursor_position(13, 2);
-
-		xSemaphoreTake(LIGHT_SEMAPHORE, portMAX_DELAY);
-		sprintf(str, "%d C", TEMPERATURE_ROOM);
-		xSemaphoreGive(LIGHT_SEMAPHORE);
-
-		dip204_write_string(str);
-
-		// write the TANK_LEVEL
-		dip204_set_cursor_position(8, 3);
-		dip204_write_string("    ");
-		dip204_set_cursor_position(8, 3);
-
-		xSemaphoreTake(POWER_SEMAPHORE, portMAX_DELAY);
-		power = POWER;
-		xSemaphoreGive(POWER_SEMAPHORE);
-		sprintf(str, "%d%%", power);
-
-		dip204_write_string(str);
-
-		targetLeds = power / 16;
-
-		if (updateLights) {
-
-			switch (leds) {
-				case 0:
-				gpio_set_gpio_pin(LED0_GPIO); // close
-				gpio_set_gpio_pin(LED1_GPIO); // close
-				gpio_set_gpio_pin(LED2_GPIO); // close
-				gpio_set_gpio_pin(LED3_GPIO); // close
-				gpio_set_gpio_pin(LED4_GPIO); // close
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 1:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_set_gpio_pin(LED1_GPIO); // close
-				gpio_set_gpio_pin(LED2_GPIO); // close
-				gpio_set_gpio_pin(LED3_GPIO); // close
-				gpio_set_gpio_pin(LED4_GPIO); // close
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 2:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_clr_gpio_pin(LED1_GPIO); // open
-				gpio_set_gpio_pin(LED2_GPIO); // close
-				gpio_set_gpio_pin(LED3_GPIO); // close
-				gpio_set_gpio_pin(LED4_GPIO); // close
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 3:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_clr_gpio_pin(LED1_GPIO); // open
-				gpio_clr_gpio_pin(LED2_GPIO); // open
-				gpio_set_gpio_pin(LED3_GPIO); // close
-				gpio_set_gpio_pin(LED4_GPIO); // close
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 4:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_clr_gpio_pin(LED1_GPIO); // open
-				gpio_clr_gpio_pin(LED2_GPIO); // open
-				gpio_clr_gpio_pin(LED3_GPIO); // open
-				gpio_set_gpio_pin(LED4_GPIO); // close
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 5:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_clr_gpio_pin(LED1_GPIO); // open
-				gpio_clr_gpio_pin(LED2_GPIO); // open
-				gpio_clr_gpio_pin(LED3_GPIO); // open
-				gpio_clr_gpio_pin(LED4_GPIO); // open
-				gpio_set_gpio_pin(LED6_GPIO); // close
-				break;
-				case 6:
-				gpio_clr_gpio_pin(LED0_GPIO); // open
-				gpio_clr_gpio_pin(LED1_GPIO); // open
-				gpio_clr_gpio_pin(LED2_GPIO); // open
-				gpio_clr_gpio_pin(LED3_GPIO); // open
-				gpio_clr_gpio_pin(LED4_GPIO); // open
-				gpio_clr_gpio_pin(LED6_GPIO); // open
-				break;
-			}
-		}
-
-		if (leds == targetLeds) {
-			increase = false;
-			updateLights = false;
-			} else {
-			updateLights = true;
-			if (leds > targetLeds) {
-				increase = false;
-				} else if (leds < targetLeds) {
-				increase = true;
-			}
-		}
-
-		if (updateLights) {
-			if (increase) {
-				leds++;
-				} else {
-				leds--;
-			}
-		}
-
-		vTaskDelay(100);
-	}
-}
 
